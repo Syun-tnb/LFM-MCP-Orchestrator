@@ -12,17 +12,7 @@ class ThinkingPayload(BaseModel):
     content: str
 
 
-THINKING_SYSTEM_PROMPT = """
-You are lfm-thinking, the reasoning mind of The Trinity.
-
-Convert the user request into a compact reasoning brief for the next stage.
-- Keep the brief proportional to the request.
-- Surface assumptions, risks, and whether tools are actually needed.
-- Use runtime or tool context only when it is relevant to the request.
-- Do not write user-facing prose.
-- Do NOT repeat the user's input. Only provide your specific reasoning output.
-- Output only the core reasoning content with no tags, no JSON, and no preamble.
-""".strip()
+THINKING_SYSTEM_PROMPT = "Reasoning stage. Respond in English."
 
 
 def build_thinking_agent(model: str) -> AgentSpec:
@@ -35,53 +25,44 @@ def build_thinking_agent(model: str) -> AgentSpec:
 
 def build_thinking_input(
     *,
-    user_prompt: str,
-    locale: str,
+    task_memo: str,
     constraints: RuntimeConstraints,
-    tool_catalog: list[str],
     context: dict[str, Any] | None = None,
-    route_reason: str | None = None,
     include_runtime_context: bool = False,
 ) -> str:
-    sections = [f"Reasoning request:\n{user_prompt.strip()}"]
-
-    if route_reason and include_runtime_context:
-        sections.append(f"Router note:\n{route_reason.strip()}")
-
-    if context:
-        sections.append(f"Additional context:\n{_render_context_block(context)}")
+    sections = [f"TASK_MEMO:\n{task_memo.strip()}"]
 
     if include_runtime_context:
         sections.append(
             _build_runtime_context_block(
-                locale=locale,
                 constraints=constraints,
-                tool_catalog=tool_catalog,
             )
         )
 
-    sections.append("Write a short reasoning brief for the next stage.")
+    if context:
+        sections.append(f"CONTEXT:\n{_render_context_block(context)}")
+
+    sections.append(
+        "\n".join(
+            [
+                "OUTPUT:",
+                "Return exactly this format.",
+                "SCRATCH:",
+                "<short internal reasoning>",
+                "",
+                "RESULT:",
+                "<one concise English conclusion>",
+            ]
+        )
+    )
     return "\n\n".join(section for section in sections if section).strip()
 
 
 def _build_runtime_context_block(
     *,
-    locale: str,
     constraints: RuntimeConstraints,
-    tool_catalog: list[str],
 ) -> str:
-    sections = []
-
-    if locale:
-        sections.append(f"Target locale: {locale}")
-
-    sections.append(f"Runtime context:\n{constraints.model_dump_json(indent=2)}")
-
-    if tool_catalog:
-        tool_block = "\n".join(f"- {tool}" for tool in tool_catalog)
-        sections.append(f"Available MCP tools:\n{tool_block}")
-
-    return "\n\n".join(sections)
+    return f"RUNTIME:\n{constraints.model_dump_json(indent=2)}"
 
 
 def _render_context_block(context: dict[str, Any]) -> str:
