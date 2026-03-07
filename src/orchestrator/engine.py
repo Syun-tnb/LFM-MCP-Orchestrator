@@ -317,7 +317,12 @@ class TrinityOrchestrator:
         )
         raw_action = (response.message.content or "").strip()
         trace.raw_content = raw_action
-        action = ActionPayload(content=_extract_tagged_block(raw_action, "instruct"))
+        if _has_exact_tag(raw_action, "instruct"):
+            action_content = _extract_tagged_block(raw_action, "instruct")
+        else:
+            warnings.append("The instruct agent did not return an <instruct> block; using the raw response as fallback.")
+            action_content = _strip_code_fences(raw_action) or draft_response
+        action = ActionPayload(content=action_content)
         traces.append(trace)
         return action, traces, tool_records, warnings
 
@@ -335,6 +340,15 @@ def _extract_tagged_block(raw_content: str, tag: str) -> str:
         if content:
             return content
 
+    fallback_match = re.search(r"<([a-zA-Z0-9_:-]+)(?:\s[^>]*)?>(.*?)</\1>", text, flags=re.DOTALL)
+    if fallback_match:
+        content = fallback_match.group(2).strip()
+        if content:
+            return content
+
+    if text:
+        return text
+
     raise TaggedOutputError(f"Model did not return a valid <{tag}> block. Snippet: {_snippet(text)}")
 
 
@@ -342,6 +356,11 @@ def _strip_code_fences(raw_content: str) -> str:
     text = raw_content.strip()
     text = re.sub(r"```(?:[a-zA-Z0-9_-]+)?", "", text)
     return text.replace("```", "").strip()
+
+
+def _has_exact_tag(raw_content: str, tag: str) -> bool:
+    pattern = rf"<{re.escape(tag)}>(.*?)</{re.escape(tag)}>"
+    return re.search(pattern, raw_content, flags=re.DOTALL | re.IGNORECASE) is not None
 
 
 def _snippet(raw_content: str, *, limit: int = 200) -> str:
