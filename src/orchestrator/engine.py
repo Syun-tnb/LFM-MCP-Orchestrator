@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import time
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
@@ -340,10 +341,8 @@ def _extract_json_payload(raw_content: str) -> str:
     if not text:
         raise StructuredOutputError("Model returned an empty response for a structured turn.")
 
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if len(lines) >= 3:
-            text = "\n".join(lines[1:-1]).strip()
+    text = re.sub(r"```(?:json)?", "", text, flags=re.IGNORECASE)
+    text = text.replace("```", "").strip()
 
     try:
         json.loads(text)
@@ -352,9 +351,29 @@ def _extract_json_payload(raw_content: str) -> str:
         match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if match:
             candidate = match.group(0)
-            json.loads(candidate)
-            return candidate
-        raise StructuredOutputError("Model did not return valid JSON.")
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                _print_raw_parse_failure(raw_content)
+                raise StructuredOutputError(
+                    f"Model returned text containing braces, but the extracted JSON was still invalid. Snippet: {_snippet(text)}"
+                ) from None
+
+        _print_raw_parse_failure(raw_content)
+        raise StructuredOutputError(f"Model did not return valid JSON. No '{{' found. Snippet: {_snippet(text)}")
+
+
+def _print_raw_parse_failure(raw_content: str) -> None:
+    print("Structured output parse failed. Raw model content:", file=sys.stderr)
+    print(raw_content, file=sys.stderr)
+
+
+def _snippet(raw_content: str, *, limit: int = 200) -> str:
+    compact = " ".join(raw_content.split())
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[:limit]}..."
 
 
 async def run_orchestrator(
