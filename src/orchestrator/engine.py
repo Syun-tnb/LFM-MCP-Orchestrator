@@ -362,6 +362,8 @@ def _strip_code_fences(raw_content: str) -> str:
 def _sanitize_content(raw_content: str) -> str:
     text = _strip_code_fences(raw_content)
     text = re.sub(r"</?[a-zA-Z0-9_:-]+(?:\s[^>]*)?>", "", text)
+    lines = [line.strip() for line in text.splitlines()]
+    text = "\n".join(lines)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
