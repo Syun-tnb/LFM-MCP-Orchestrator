@@ -211,6 +211,7 @@ class TrinityOrchestrator:
 
         action, action_traces, tool_records, action_warnings = await self._run_instruct_phase(
             user_prompt=user_prompt,
+            reasoning_content=reasoning.content,
             stream_blocks=stream_blocks,
         )
         traces.extend(action_traces)
@@ -228,7 +229,7 @@ class TrinityOrchestrator:
                     "content": build_jp_input(
                         user_prompt=user_prompt,
                         locale=self.config.target_locale,
-                        stream_context=_join_stream(stream_blocks),
+                        action_content=action.content,
                     ),
                 },
             ],
@@ -260,6 +261,7 @@ class TrinityOrchestrator:
         self,
         *,
         user_prompt: str,
+        reasoning_content: str,
         stream_blocks: list[str],
     ) -> tuple[ActionPayload, list[ModelTrace], list[ToolExecutionRecord], list[str]]:
         messages: list[dict[str, Any]] = [
@@ -268,7 +270,7 @@ class TrinityOrchestrator:
                 "role": "user",
                 "content": build_instruct_handoff_input(
                     user_prompt=user_prompt,
-                    stream_context=_join_stream(stream_blocks),
+                    reasoning_content=reasoning_content,
                     tool_catalog=self.tool_registry.render_catalog(),
                 ),
             },
@@ -317,7 +319,7 @@ class TrinityOrchestrator:
                     "role": "user",
                     "content": build_instruct_finalize_input(
                         user_prompt=user_prompt,
-                        stream_context=_join_stream(stream_blocks),
+                        reasoning_content=reasoning_content,
                         draft_response=draft_response,
                         tool_results="\n\n".join(_render_tool_block(record) for record in tool_records),
                     ),

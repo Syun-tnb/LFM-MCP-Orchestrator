@@ -21,6 +21,7 @@ Stay pragmatic and grounded:
 - Assume models run locally through Ollama and external capabilities arrive through MCP limbs.
 - Surface risks, assumptions, and where tools materially improve correctness.
 - Do not write user-facing prose.
+- Do NOT repeat the user's input. Only provide your specific reasoning output.
 - Return your reasoning as plain text wrapped exactly once in <reasoning>...</reasoning>.
 - Inside the tags, think freely in natural language. Do not output JSON.
 """.strip()
