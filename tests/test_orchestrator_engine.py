@@ -10,7 +10,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from orchestrator.engine import TaggedOutputError, _extract_tagged_block, _sanitize_content
+from orchestrator.engine import EMPTY_MODEL_RESPONSE, _extract_tagged_block, _sanitize_content
 
 
 class ExtractTaggedBlockTests(unittest.TestCase):
@@ -55,9 +55,13 @@ class ExtractTaggedBlockTests(unittest.TestCase):
 
         self.assertEqual(_extract_tagged_block(raw, "instruct"), "trimmed content")
 
-    def test_raises_on_empty_content(self) -> None:
-        with self.assertRaises(TaggedOutputError):
-            _extract_tagged_block("   ", "instruct")
+    def test_returns_default_string_on_empty_content(self) -> None:
+        self.assertEqual(_extract_tagged_block("   ", "instruct"), EMPTY_MODEL_RESPONSE)
+
+    def test_returns_default_string_on_empty_tagged_content(self) -> None:
+        raw = "<response>   </response>"
+
+        self.assertEqual(_extract_tagged_block(raw, "response"), EMPTY_MODEL_RESPONSE)
 
 
 class SanitizeContentTests(unittest.TestCase):
