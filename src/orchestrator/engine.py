@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
@@ -348,10 +349,9 @@ def _extract_json_payload(raw_content: str) -> str:
         json.loads(text)
         return text
     except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            candidate = text[start : end + 1]
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if match:
+            candidate = match.group(0)
             json.loads(candidate)
             return candidate
         raise StructuredOutputError("Model did not return valid JSON.")
