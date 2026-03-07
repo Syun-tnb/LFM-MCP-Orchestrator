@@ -15,12 +15,10 @@ class ThinkingPayload(BaseModel):
 THINKING_SYSTEM_PROMPT = """
 You are lfm-thinking, the reasoning mind of The Trinity.
 
-Convert the user request into a precise execution brief for a local orchestrator.
-Stay pragmatic and grounded:
-- Prefer the smallest plan that can work on a MacBook Air M4 with 24GB memory.
-- Assume models run locally through Ollama and external capabilities arrive through MCP limbs.
-- Surface risks, assumptions, and where tools materially improve correctness.
-- Transform the request into a compact reasoning brief for the next model.
+Convert the user request into a compact reasoning brief for the next stage.
+- Keep the brief proportional to the request.
+- Surface assumptions, risks, and whether tools are actually needed.
+- Use runtime or tool context only when it is relevant to the request.
 - Do not write user-facing prose.
 - Do NOT repeat the user's input. Only provide your specific reasoning output.
 - Output only the core reasoning content with no tags, no JSON, and no preamble.
@@ -43,23 +41,90 @@ def build_thinking_input(
     tool_catalog: list[str],
     context: dict[str, Any] | None = None,
 ) -> str:
-    tool_block = "\n".join(f"- {tool}" for tool in tool_catalog) if tool_catalog else "- No MCP limbs are attached."
-    context_block = json.dumps(context, ensure_ascii=True, indent=2, sort_keys=True) if context else "null"
-    return f"""
-User request:
-{user_prompt}
+    sections = [f"User request:\n{user_prompt.strip()}"]
 
-Target locale: {locale}
+    if _should_include_locale_context(user_prompt, locale):
+        sections.append(f"Target locale: {locale}")
 
-Runtime constraints:
-{constraints.model_dump_json(indent=2)}
+    optional_context = _build_optional_thinking_context(
+        user_prompt=user_prompt,
+        constraints=constraints,
+        tool_catalog=tool_catalog,
+        context=context,
+    )
+    if optional_context:
+        sections.append(optional_context)
 
-Available MCP limbs:
-{tool_block}
+    sections.append("Write a short reasoning brief for the next stage.")
+    return "\n\n".join(section for section in sections if section).strip()
 
-Additional context:
-{context_block}
 
-Produce a practical reasoning brief that makes the next agent faster and safer.
-Output only the reasoning itself.
-""".strip()
+def _build_optional_thinking_context(
+    *,
+    user_prompt: str,
+    constraints: RuntimeConstraints,
+    tool_catalog: list[str],
+    context: dict[str, Any] | None,
+) -> str:
+    sections: list[str] = []
+
+    if context:
+        sections.append(
+            "Additional context:\n"
+            f"{json.dumps(context, ensure_ascii=True, indent=2, sort_keys=True)}"
+        )
+
+    if _should_include_runtime_context(user_prompt):
+        sections.append(f"Runtime constraints:\n{constraints.model_dump_json(indent=2)}")
+        if tool_catalog:
+            tool_block = "\n".join(f"- {tool}" for tool in tool_catalog)
+            sections.append(f"Available MCP tools:\n{tool_block}")
+
+    return "\n\n".join(sections).strip()
+
+
+def _should_include_runtime_context(user_prompt: str) -> bool:
+    prompt = user_prompt.casefold()
+    keywords = (
+        "agent",
+        "cli",
+        "local model",
+        "local llm",
+        "mcp",
+        "model",
+        "ollama",
+        "orchestr",
+        "prompt",
+        "python",
+        "runtime",
+        "tool",
+        "uv",
+        "workflow",
+        "モデル",
+        "エージェント",
+        "オーケスト",
+        "ツール",
+        "ランタイム",
+        "ローカル",
+    )
+    return any(keyword in prompt for keyword in keywords)
+
+
+def _should_include_locale_context(user_prompt: str, locale: str) -> bool:
+    if not locale:
+        return False
+
+    prompt = user_prompt.casefold()
+    locale_keywords = (
+        "english",
+        "japanese",
+        "language",
+        "locale",
+        "translate",
+        "translation",
+        "日本語",
+        "英語",
+        "翻訳",
+        "言語",
+    )
+    return any(keyword in prompt for keyword in locale_keywords)

@@ -402,7 +402,9 @@ class TrinityOrchestrator:
         raw_action = (response.message.content or "").strip()
         trace.raw_content = raw_action
         _log_agent_output("instruct-finalize", raw_action)
-        action_content = _coerce_stage_content(raw_action) or _coerce_stage_content(draft_response)
+        clean_action = _sanitize_content(raw_action)
+        clean_draft = _sanitize_content(draft_response)
+        action_content = clean_action or clean_draft or EMPTY_MODEL_RESPONSE
         return ActionPayload(content=action_content), trace
 
     async def _stage_jp(
