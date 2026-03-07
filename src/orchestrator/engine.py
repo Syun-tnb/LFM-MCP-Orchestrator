@@ -113,7 +113,6 @@ class OllamaGateway:
         model: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
-        think_level: bool | str | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[Any, ModelTrace]:
         started = time.perf_counter()
@@ -122,7 +121,6 @@ class OllamaGateway:
                 model=model,
                 messages=messages,
                 tools=tools,
-                think=think_level,
                 options=options,
                 keep_alive=self._config.keep_alive,
             )
@@ -138,14 +136,12 @@ class OllamaGateway:
         model: str,
         messages: list[dict[str, Any]],
         response_model: type[ModelT],
-        think_level: bool | str | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[ModelT, ModelTrace]:
         response, trace = await self.chat(
             agent_name=agent_name,
             model=model,
             messages=messages,
-            think_level=think_level,
             options=options,
         )
         raw_content = (response.message.content or "").strip()
@@ -223,7 +219,6 @@ class TrinityOrchestrator:
                 },
             ],
             response_model=ThinkingPayload,
-            think_level=self.agents.thinking.think_level,
             options=self.agents.thinking.options,
         )
         traces.append(trace)

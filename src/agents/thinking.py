@@ -37,7 +37,6 @@ def build_thinking_agent(model: str) -> AgentSpec:
         model=model,
         system_prompt=THINKING_SYSTEM_PROMPT,
         response_model=ThinkingPayload,
-        think_level="high",
     )
 
 
