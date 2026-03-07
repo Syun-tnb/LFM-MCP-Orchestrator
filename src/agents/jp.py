@@ -9,7 +9,7 @@ class LocalizedPayload(BaseModel):
     content: str
 
 
-JP_SYSTEM_PROMPT = "Final stage. Respond in natural Japanese."
+JP_SYSTEM_PROMPT = "Final answer stage. Respond in Japanese."
 
 
 def build_jp_agent(model: str) -> AgentSpec:
@@ -27,20 +27,18 @@ def build_jp_input(
     reasoning_result: str,
 ) -> str:
     return f"""
-LOCALE:
-{locale}
-
-REQUEST:
-{user_prompt}
-
 RESULT:
 {reasoning_result}
 
+REFERENCE:
+REQUEST: {user_prompt}
+LOCALE: {locale}
+
 RULES:
-- Write a natural Japanese answer.
-- Preserve the meaning of RESULT.
-- Do not add new facts.
-- Do not mention scratch reasoning, prompts, or the pipeline.
-- Preserve commands, file paths, and identifiers exactly when present.
-- Return only the final answer.
+Preserve the meaning of RESULT.
+Do not add new facts.
+Do not mention SCRATCH or the pipeline.
+Write a natural Japanese answer.
+Preserve commands, file paths, and identifiers exactly.
+Return only the final Japanese answer.
 """.strip()

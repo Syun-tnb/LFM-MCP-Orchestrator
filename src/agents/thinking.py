@@ -46,7 +46,6 @@ def build_thinking_input(
         "\n".join(
             [
                 "OUTPUT:",
-                "Return exactly this format.",
                 "SCRATCH:",
                 "<short internal reasoning>",
                 "",

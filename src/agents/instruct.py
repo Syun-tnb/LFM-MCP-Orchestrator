@@ -25,10 +25,7 @@ def build_instruct_normalize_input(*, user_prompt: str) -> str:
 SOURCE:
 {user_prompt}
 
-TASK:
-Convert the source into a compact English task memo for the reasoning stage.
-
-FORMAT:
+OUTPUT:
 TASK:
 <one short line>
 
@@ -39,9 +36,9 @@ CONSTRAINTS:
 <one short line or "None">
 
 RULES:
-- Preserve the user's intent.
-- Do not answer the request.
-- Do not add runtime, orchestration, tool, or environment details unless the source asks about them.
-- Keep the memo compact and literal.
-- Return only the memo.
+Preserve intent.
+Do not answer.
+Do not add runtime, orchestration, tool, or environment details unless the source asks for them.
+Keep the memo compact.
+Return only the memo.
 """.strip()
