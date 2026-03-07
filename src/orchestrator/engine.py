@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import time
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
@@ -201,9 +202,11 @@ class TrinityOrchestrator:
         )
         raw_reasoning = (response.message.content or "").strip()
         trace.raw_content = raw_reasoning
+        _log_agent_output("thinking", raw_reasoning)
         reasoning_text = _extract_tagged_block(raw_reasoning, "reasoning")
         reasoning = ThinkingPayload(content=reasoning_text)
         stream_blocks.append(_wrap_tag("reasoning", reasoning_text))
+        _log_stream("thinking", stream_blocks)
         traces.append(trace)
 
         action, action_traces, tool_records, action_warnings = await self._run_instruct_phase(
@@ -213,6 +216,7 @@ class TrinityOrchestrator:
         traces.extend(action_traces)
         warnings.extend(action_warnings)
         stream_blocks.append(_wrap_tag("instruct", action.content))
+        _log_stream("instruct", stream_blocks)
 
         response, trace = await self.gateway.chat(
             agent_name=self.agents.jp.name,
@@ -232,8 +236,10 @@ class TrinityOrchestrator:
         )
         raw_response = (response.message.content or "").strip()
         trace.raw_content = raw_response
+        _log_agent_output("jp", raw_response)
         localized = LocalizedPayload(content=_extract_tagged_block(raw_response, "response"))
         stream_blocks.append(_wrap_tag("response", localized.content))
+        _log_stream("jp", stream_blocks)
         traces.append(trace)
 
         return OrchestrationResult(
@@ -285,6 +291,7 @@ class TrinityOrchestrator:
             assistant_message = response.message.model_dump(exclude_none=True)
             messages.append(assistant_message)
             draft_response = (response.message.content or "").strip()
+            _log_agent_output("instruct", draft_response)
 
             tool_calls = list(getattr(response.message, "tool_calls", None) or [])
             if not tool_calls:
@@ -296,6 +303,7 @@ class TrinityOrchestrator:
                 tool_result = await self.tool_registry.call_tool(tool_name, tool_args)
                 tool_records.append(tool_result)
                 stream_blocks.append(_render_tool_block(tool_result))
+                _log_stream(f"instruct-tool:{tool_name}", stream_blocks)
                 messages.append(tool_result.as_ollama_message())
         else:
             warnings.append("The instruct agent reached the maximum number of tool rounds.")
@@ -319,6 +327,7 @@ class TrinityOrchestrator:
         )
         raw_action = (response.message.content or "").strip()
         trace.raw_content = raw_action
+        _log_agent_output("instruct-finalize", raw_action)
         if _has_exact_tag(raw_action, "instruct"):
             action_content = _extract_tagged_block(raw_action, "instruct")
         else:
@@ -380,6 +389,18 @@ def _snippet(raw_content: str, *, limit: int = 200) -> str:
     if len(compact) <= limit:
         return compact
     return f"{compact[:limit]}..."
+
+
+def _log_agent_output(agent: str, raw_content: str) -> None:
+    print(f"\n=== RAW {agent.upper()} OUTPUT ===", file=sys.stderr)
+    print(raw_content or EMPTY_MODEL_RESPONSE, file=sys.stderr)
+    print(f"=== END RAW {agent.upper()} OUTPUT ===", file=sys.stderr)
+
+
+def _log_stream(stage: str, stream_blocks: list[str]) -> None:
+    print(f"\n=== BATON AFTER {stage.upper()} ===", file=sys.stderr)
+    print(_join_stream(stream_blocks) or "(empty baton)", file=sys.stderr)
+    print(f"=== END BATON AFTER {stage.upper()} ===", file=sys.stderr)
 
 
 def _wrap_tag(tag: str, content: str) -> str:
