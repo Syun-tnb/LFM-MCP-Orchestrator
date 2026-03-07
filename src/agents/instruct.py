@@ -17,9 +17,9 @@ Turn the reasoning brief into action.
 - Keep tool usage efficient; this system runs on a local MacBook Air.
 - Avoid speculative claims when a tool could verify them.
 - After you have enough information, respond directly and compactly.
+- Transform the reasoning brief into the concrete execution result the final model needs.
 - Do NOT repeat the previous agent's input. Only provide your specific action output.
-- Your final output must be wrapped exactly once in <instruct>...</instruct>.
-- Do not output JSON.
+- Output only the core action content with no tags, no JSON, and no preamble.
 """.strip()
 
 
@@ -49,7 +49,7 @@ Available tools:
 {tool_block}
 
 Do NOT repeat the thinking handoff.
-If a tool is useful, call it. When you have enough information, provide the final action block wrapped in <instruct>...</instruct>.
+If a tool is useful, call it. When you have enough information, provide only the final action content.
 """.strip()
 
 
@@ -76,5 +76,5 @@ Tool transcript:
 {tool_results or "(no tool results)"}
 
 Do NOT repeat the thinking handoff or the tool transcript.
-Return only a single <instruct>...</instruct> block.
+Return only the final action content.
 """.strip()

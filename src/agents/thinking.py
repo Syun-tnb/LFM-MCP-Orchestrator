@@ -20,10 +20,10 @@ Stay pragmatic and grounded:
 - Prefer the smallest plan that can work on a MacBook Air M4 with 24GB memory.
 - Assume models run locally through Ollama and external capabilities arrive through MCP limbs.
 - Surface risks, assumptions, and where tools materially improve correctness.
+- Transform the request into a compact reasoning brief for the next model.
 - Do not write user-facing prose.
 - Do NOT repeat the user's input. Only provide your specific reasoning output.
-- Return your reasoning as plain text wrapped exactly once in <reasoning>...</reasoning>.
-- Inside the tags, think freely in natural language. Do not output JSON.
+- Output only the core reasoning content with no tags, no JSON, and no preamble.
 """.strip()
 
 
@@ -60,6 +60,6 @@ Available MCP limbs:
 Additional context:
 {context_block}
 
-Return a practical reasoning brief that makes the next agent faster and safer.
-Wrap the entire output in <reasoning>...</reasoning>.
+Produce a practical reasoning brief that makes the next agent faster and safer.
+Output only the reasoning itself.
 """.strip()

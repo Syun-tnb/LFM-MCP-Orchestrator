@@ -10,79 +10,57 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from orchestrator.engine import EMPTY_MODEL_RESPONSE, _extract_tagged_block, _sanitize_content
+from orchestrator.engine import EMPTY_MODEL_RESPONSE, _coerce_stage_content, _join_stream, _sanitize_content
 
 
-class ExtractTaggedBlockTests(unittest.TestCase):
-    def test_extracts_requested_tag_and_sanitizes_nested_tags(self) -> None:
-        raw = """
-        <reasoning>ignore this</reasoning>
-        <instruct>
-            <reasoning>nested plan</reasoning>
-            final action text
-        </instruct>
-        """
-
-        self.assertEqual(_extract_tagged_block(raw, "instruct"), "nested plan\nfinal action text")
-
-    def test_falls_back_to_any_tag_when_requested_tag_is_missing(self) -> None:
-        raw = "  <response> wrapped fallback payload </response>  "
-
-        self.assertEqual(_extract_tagged_block(raw, "instruct"), "wrapped fallback payload")
-
-    def test_falls_back_to_sanitized_raw_text_when_no_tags_exist(self) -> None:
+class CoerceStageContentTests(unittest.TestCase):
+    def test_returns_trimmed_plain_text(self) -> None:
         raw = "  plain fallback text with no wrappers  "
 
-        self.assertEqual(_extract_tagged_block(raw, "instruct"), "plain fallback text with no wrappers")
+        self.assertEqual(_coerce_stage_content(raw), "plain fallback text with no wrappers")
 
-    def test_prefers_requested_tag_when_multiple_different_tags_are_present(self) -> None:
+    def test_strips_code_fences_and_whitespace(self) -> None:
         raw = """
-        <reasoning>first block</reasoning>
-        <instruct>second block</instruct>
-        <response>third block</response>
-        """
-
-        self.assertEqual(_extract_tagged_block(raw, "instruct"), "second block")
-
-    def test_handles_code_fences_and_whitespace(self) -> None:
-        raw = """
-        ```xml
-        <instruct>
+        ```text
             trimmed content
-        </instruct>
         ```
         """
 
-        self.assertEqual(_extract_tagged_block(raw, "instruct"), "trimmed content")
+        self.assertEqual(_coerce_stage_content(raw), "trimmed content")
 
     def test_returns_default_string_on_empty_content(self) -> None:
-        self.assertEqual(_extract_tagged_block("   ", "instruct"), EMPTY_MODEL_RESPONSE)
+        self.assertEqual(_coerce_stage_content("   "), EMPTY_MODEL_RESPONSE)
 
-    def test_returns_default_string_on_empty_tagged_content(self) -> None:
-        raw = "<response>   </response>"
+    def test_preserves_mixed_plain_text_lines(self) -> None:
+        raw = """
+        first block
 
-        self.assertEqual(_extract_tagged_block(raw, "response"), EMPTY_MODEL_RESPONSE)
+        second block
+        third block
+        """
+
+        self.assertEqual(_coerce_stage_content(raw), "first block\n\nsecond block\nthird block")
 
 
 class SanitizeContentTests(unittest.TestCase):
-    def test_strips_stage_tags_and_outer_whitespace(self) -> None:
-        raw = "  <reasoning> alpha </reasoning>  "
+    def test_trims_outer_whitespace(self) -> None:
+        raw = "  alpha  "
 
         self.assertEqual(_sanitize_content(raw), "alpha")
 
-    def test_strips_mixed_tags_from_dirty_input(self) -> None:
+    def test_preserves_mixed_plain_text_from_dirty_input(self) -> None:
         raw = """
-        <reasoning>plan</reasoning>
-        <instruct>execute</instruct>
-        <response>answer</response>
+        plan
+          execute
+        answer
         """
 
         self.assertEqual(_sanitize_content(raw), "plan\nexecute\nanswer")
 
-    def test_strips_code_fences_before_removing_tags(self) -> None:
+    def test_strips_code_fences_before_normalizing_text(self) -> None:
         raw = """
-        ```xml
-        <instruct>clean me</instruct>
+        ```text
+        clean me
         ```
         """
 
@@ -93,10 +71,17 @@ class SanitizeContentTests(unittest.TestCase):
 
         self.assertEqual(_sanitize_content(raw), "line one\n\nline two")
 
-    def test_removes_nested_tags_but_keeps_text_content(self) -> None:
-        raw = "<instruct><reasoning>echoed old tag</reasoning> plain action text</instruct>"
+    def test_keeps_plain_text_markers_as_literal_content(self) -> None:
+        raw = "[thinking]\nplain action text\n[end]"
 
-        self.assertEqual(_sanitize_content(raw), "echoed old tag plain action text")
+        self.assertEqual(_sanitize_content(raw), "[thinking]\nplain action text\n[end]")
+
+
+class JoinStreamTests(unittest.TestCase):
+    def test_uses_stage_separator(self) -> None:
+        blocks = ["reasoning brief", "execution output", "final response"]
+
+        self.assertEqual(_join_stream(blocks), "reasoning brief\n---\nexecution output\n---\nfinal response")
 
 
 if __name__ == "__main__":

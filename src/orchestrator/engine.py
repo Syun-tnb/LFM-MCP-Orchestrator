@@ -100,10 +100,6 @@ class ModelInvocationError(OrchestratorError):
     pass
 
 
-class TaggedOutputError(OrchestratorError):
-    pass
-
-
 class OllamaGateway:
     def __init__(self, config: EngineConfig) -> None:
         self._config = config
@@ -181,6 +177,49 @@ class TrinityOrchestrator:
         traces: list[ModelTrace] = []
         stream_blocks: list[str] = []
 
+        reasoning, trace = await self._stage_thinking(
+            user_prompt=user_prompt,
+            context=context,
+            stream_blocks=stream_blocks,
+        )
+        traces.append(trace)
+
+        action, action_traces, tool_records, action_warnings = await self._stage_instruct(
+            user_prompt=user_prompt,
+            reasoning_content=reasoning.content,
+            stream_blocks=stream_blocks,
+        )
+        traces.extend(action_traces)
+        warnings.extend(action_warnings)
+
+        localized, trace = await self._stage_jp(
+            user_prompt=user_prompt,
+            action_content=action.content,
+            stream_blocks=stream_blocks,
+        )
+        traces.append(trace)
+
+        return OrchestrationResult(
+            request=user_prompt,
+            locale=self.config.target_locale,
+            reasoning=reasoning,
+            action=action,
+            localized=localized,
+            stream=_join_stream(stream_blocks),
+            tools=tool_records,
+            warnings=warnings,
+            traces=traces,
+            started_at=started_at,
+            completed_at=datetime.now(UTC),
+        )
+
+    async def _stage_thinking(
+        self,
+        *,
+        user_prompt: str,
+        context: dict[str, Any] | None,
+        stream_blocks: list[str],
+    ) -> tuple[ThinkingPayload, ModelTrace]:
         tool_catalog = self.tool_registry.render_catalog()
         response, trace = await self.gateway.chat(
             agent_name=self.agents.thinking.name,
@@ -203,61 +242,12 @@ class TrinityOrchestrator:
         raw_reasoning = (response.message.content or "").strip()
         trace.raw_content = raw_reasoning
         _log_agent_output("thinking", raw_reasoning)
-        reasoning_text = _extract_tagged_block(raw_reasoning, "reasoning")
-        reasoning = ThinkingPayload(content=reasoning_text)
-        stream_blocks.append(_wrap_tag("reasoning", reasoning_text))
+        reasoning = ThinkingPayload(content=_coerce_stage_content(raw_reasoning))
+        stream_blocks.append(reasoning.content)
         _log_stream("thinking", stream_blocks)
-        traces.append(trace)
+        return reasoning, trace
 
-        action, action_traces, tool_records, action_warnings = await self._run_instruct_phase(
-            user_prompt=user_prompt,
-            reasoning_content=reasoning.content,
-            stream_blocks=stream_blocks,
-        )
-        traces.extend(action_traces)
-        warnings.extend(action_warnings)
-        stream_blocks.append(_wrap_tag("instruct", action.content))
-        _log_stream("instruct", stream_blocks)
-
-        response, trace = await self.gateway.chat(
-            agent_name=self.agents.jp.name,
-            model=self.agents.jp.model,
-            messages=[
-                {"role": "system", "content": self.agents.jp.system_prompt},
-                {
-                    "role": "user",
-                    "content": build_jp_input(
-                        user_prompt=user_prompt,
-                        locale=self.config.target_locale,
-                        action_content=action.content,
-                    ),
-                },
-            ],
-            options=self.agents.jp.options,
-        )
-        raw_response = (response.message.content or "").strip()
-        trace.raw_content = raw_response
-        _log_agent_output("jp", raw_response)
-        localized = LocalizedPayload(content=_extract_tagged_block(raw_response, "response"))
-        stream_blocks.append(_wrap_tag("response", localized.content))
-        _log_stream("jp", stream_blocks)
-        traces.append(trace)
-
-        return OrchestrationResult(
-            request=user_prompt,
-            locale=self.config.target_locale,
-            reasoning=reasoning,
-            action=action,
-            localized=localized,
-            stream=_join_stream(stream_blocks),
-            tools=tool_records,
-            warnings=warnings,
-            traces=traces,
-            started_at=started_at,
-            completed_at=datetime.now(UTC),
-        )
-
-    async def _run_instruct_phase(
+    async def _stage_instruct(
         self,
         *,
         user_prompt: str,
@@ -330,40 +320,48 @@ class TrinityOrchestrator:
         raw_action = (response.message.content or "").strip()
         trace.raw_content = raw_action
         _log_agent_output("instruct-finalize", raw_action)
-        if _has_exact_tag(raw_action, "instruct"):
-            action_content = _extract_tagged_block(raw_action, "instruct")
-        else:
-            warnings.append("The instruct agent did not return an <instruct> block; using the raw response as fallback.")
-            action_content = _sanitize_content(_strip_code_fences(raw_action)) or _sanitize_content(draft_response)
+        action_content = _coerce_stage_content(raw_action) or _coerce_stage_content(draft_response)
         action = ActionPayload(content=action_content)
+        stream_blocks.append(action.content)
+        _log_stream("instruct", stream_blocks)
         traces.append(trace)
         return action, traces, tool_records, warnings
 
+    async def _stage_jp(
+        self,
+        *,
+        user_prompt: str,
+        action_content: str,
+        stream_blocks: list[str],
+    ) -> tuple[LocalizedPayload, ModelTrace]:
+        response, trace = await self.gateway.chat(
+            agent_name=self.agents.jp.name,
+            model=self.agents.jp.model,
+            messages=[
+                {"role": "system", "content": self.agents.jp.system_prompt},
+                {
+                    "role": "user",
+                    "content": build_jp_input(
+                        user_prompt=user_prompt,
+                        locale=self.config.target_locale,
+                        action_content=action_content,
+                    ),
+                },
+            ],
+            options=self.agents.jp.options,
+        )
+        raw_response = (response.message.content or "").strip()
+        trace.raw_content = raw_response
+        _log_agent_output("jp", raw_response)
+        localized = LocalizedPayload(content=_coerce_stage_content(raw_response))
+        stream_blocks.append(localized.content)
+        _log_stream("jp", stream_blocks)
+        return localized, trace
 
-def _extract_tagged_block(raw_content: str, tag: str) -> str:
-    text = raw_content.strip()
-    if not text:
-        return EMPTY_MODEL_RESPONSE
 
-    text = _strip_code_fences(text)
-    pattern = rf"<{re.escape(tag)}>(.*?)</{re.escape(tag)}>"
-    match = re.search(pattern, text, flags=re.DOTALL | re.IGNORECASE)
-    if match:
-        content = _sanitize_content(match.group(1))
-        if content:
-            return content
-
-    fallback_match = re.search(r"<([a-zA-Z0-9_:-]+)(?:\s[^>]*)?>(.*?)</\1>", text, flags=re.DOTALL)
-    if fallback_match:
-        content = _sanitize_content(fallback_match.group(2))
-        if content:
-            return content
-
-    sanitized = _sanitize_content(text)
-    if sanitized:
-        return sanitized
-
-    return EMPTY_MODEL_RESPONSE
+def _coerce_stage_content(raw_content: str) -> str:
+    text = _sanitize_content(raw_content)
+    return text or EMPTY_MODEL_RESPONSE
 
 
 def _strip_code_fences(raw_content: str) -> str:
@@ -381,18 +379,6 @@ def _sanitize_content(raw_content: str) -> str:
     return text.strip()
 
 
-def _has_exact_tag(raw_content: str, tag: str) -> bool:
-    pattern = rf"<{re.escape(tag)}>(.*?)</{re.escape(tag)}>"
-    return re.search(pattern, raw_content, flags=re.DOTALL | re.IGNORECASE) is not None
-
-
-def _snippet(raw_content: str, *, limit: int = 200) -> str:
-    compact = " ".join(raw_content.split())
-    if len(compact) <= limit:
-        return compact
-    return f"{compact[:limit]}..."
-
-
 def _log_agent_output(agent: str, raw_content: str) -> None:
     print(f"\n=== RAW {agent.upper()} OUTPUT ===", file=sys.stderr)
     print(raw_content or EMPTY_MODEL_RESPONSE, file=sys.stderr)
@@ -404,22 +390,17 @@ def _log_stream(stage: str, stream_blocks: list[str]) -> None:
     print(_join_stream(stream_blocks) or "(empty baton)", file=sys.stderr)
     print(f"=== END BATON AFTER {stage.upper()} ===", file=sys.stderr)
 
-
-def _wrap_tag(tag: str, content: str) -> str:
-    return f"<{tag}>\n{content.strip()}\n</{tag}>"
-
-
 def _join_stream(blocks: list[str]) -> str:
-    return "\n\n".join(block for block in blocks if block).strip()
+    return "\n---\n".join(block for block in blocks if block).strip()
 
 
 def _render_tool_block(record: ToolExecutionRecord) -> str:
     payload = record.content.strip() or "(empty)"
     status = "error" if record.is_error else "ok"
     return (
-        f'<tool name="{record.alias}" server="{record.server}" status="{status}">\n'
+        f"[tool alias={record.alias} server={record.server} status={status}]\n"
         f"{payload}\n"
-        f"</tool>"
+        f"[end tool]"
     )
 
 
