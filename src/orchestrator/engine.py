@@ -128,6 +128,29 @@ class OllamaGateway:
 
         return response, self._build_trace(agent_name=agent_name, model=model, response=response, started=started)
 
+    async def generate(
+        self,
+        *,
+        agent_name: str,
+        model: str,
+        prompt: str,
+        system: str | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> tuple[Any, ModelTrace]:
+        started = time.perf_counter()
+        try:
+            response = await self._client.generate(
+                model=model,
+                prompt=prompt,
+                system=system,
+                options=options,
+                keep_alive=self._config.keep_alive,
+            )
+        except Exception as exc:
+            raise ModelInvocationError(f"{agent_name} model call failed: {exc}") from exc
+
+        return response, self._build_trace(agent_name=agent_name, model=model, response=response, started=started)
+
     @staticmethod
     def _build_trace(*, agent_name: str, model: str, response: Any, started: float) -> ModelTrace:
         return ModelTrace(
@@ -137,8 +160,8 @@ class OllamaGateway:
             prompt_tokens=getattr(response, "prompt_eval_count", None),
             completion_tokens=getattr(response, "eval_count", None),
             stop_reason=getattr(response, "done_reason", None),
-            raw_content=getattr(response.message, "content", None),
-            raw_thinking=getattr(response.message, "thinking", None),
+            raw_content=_extract_response_content(response),
+            raw_thinking=_extract_response_thinking(response),
         )
 
 
@@ -221,25 +244,23 @@ class TrinityOrchestrator:
         stream_blocks: list[str],
     ) -> tuple[ThinkingPayload, ModelTrace]:
         tool_catalog = self.tool_registry.render_catalog()
-        response, trace = await self.gateway.chat(
+        prompt = _build_thinking_prompt(
+            system_prompt=self.agents.thinking.system_prompt,
+            user_input=build_thinking_input(
+                user_prompt=user_prompt,
+                locale=self.config.target_locale,
+                constraints=self.config.constraints,
+                tool_catalog=tool_catalog,
+                context=context,
+            ),
+        )
+        response, trace = await self.gateway.generate(
             agent_name=self.agents.thinking.name,
             model=self.agents.thinking.model,
-            messages=[
-                {"role": "system", "content": self.agents.thinking.system_prompt},
-                {
-                    "role": "user",
-                    "content": build_thinking_input(
-                        user_prompt=user_prompt,
-                        locale=self.config.target_locale,
-                        constraints=self.config.constraints,
-                        tool_catalog=tool_catalog,
-                        context=context,
-                    ),
-                },
-            ],
+            prompt=prompt,
             options=self.agents.thinking.options,
         )
-        raw_reasoning = (response.message.content or "").strip()
+        raw_reasoning = (_extract_response_content(response) or "").strip()
         trace.raw_content = raw_reasoning
         _log_agent_output("thinking", raw_reasoning)
         reasoning = ThinkingPayload(content=_coerce_stage_content(raw_reasoning))
@@ -364,6 +385,24 @@ def _coerce_stage_content(raw_content: str) -> str:
     return text or EMPTY_MODEL_RESPONSE
 
 
+def _build_thinking_prompt(*, system_prompt: str, user_input: str) -> str:
+    return f"{system_prompt.strip()}\n\n{user_input.strip()}".strip()
+
+
+def _extract_response_content(response: Any) -> str | None:
+    message = getattr(response, "message", None)
+    if message is not None:
+        return getattr(message, "content", None)
+    return getattr(response, "response", None)
+
+
+def _extract_response_thinking(response: Any) -> str | None:
+    message = getattr(response, "message", None)
+    if message is not None and getattr(message, "thinking", None) is not None:
+        return getattr(message, "thinking", None)
+    return getattr(response, "thinking", None)
+
+
 def _strip_code_fences(raw_content: str) -> str:
     text = raw_content.strip()
     text = re.sub(r"```(?:[a-zA-Z0-9_-]+)?", "", text)
@@ -372,6 +411,8 @@ def _strip_code_fences(raw_content: str) -> str:
 
 def _sanitize_content(raw_content: str) -> str:
     text = _strip_code_fences(raw_content)
+    text = re.sub(r"<\|[^>]+?\|>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
     text = re.sub(r"</?[a-zA-Z0-9_:-]+(?:\s[^>]*)?>", "", text)
     lines = [line.strip() for line in text.splitlines()]
     text = "\n".join(lines)
