@@ -275,7 +275,32 @@ class TrinityOrchestrator:
         reasoning_content: str,
         stream_blocks: list[str],
     ) -> tuple[ActionPayload, list[ModelTrace], list[ToolExecutionRecord], list[str]]:
-        messages: list[dict[str, Any]] = [
+        messages = self._build_instruct_handoff_messages(
+            user_prompt=user_prompt,
+            reasoning_content=reasoning_content,
+        )
+        draft_response, traces, tool_records, warnings = await self._run_instruct_tool_loop(
+            messages=messages,
+            stream_blocks=stream_blocks,
+        )
+        action, trace = await self._finalize_instruct_response(
+            user_prompt=user_prompt,
+            reasoning_content=reasoning_content,
+            draft_response=draft_response,
+            tool_records=tool_records,
+        )
+        stream_blocks.append(action.content)
+        _log_stream("instruct", stream_blocks)
+        traces.append(trace)
+        return action, traces, tool_records, warnings
+
+    def _build_instruct_handoff_messages(
+        self,
+        *,
+        user_prompt: str,
+        reasoning_content: str,
+    ) -> list[dict[str, Any]]:
+        return [
             {"role": "system", "content": self.agents.instruct.system_prompt},
             {
                 "role": "user",
@@ -286,6 +311,13 @@ class TrinityOrchestrator:
                 ),
             },
         ]
+
+    async def _run_instruct_tool_loop(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        stream_blocks: list[str],
+    ) -> tuple[str, list[ModelTrace], list[ToolExecutionRecord], list[str]]:
         traces: list[ModelTrace] = []
         warnings: list[str] = []
         tool_records: list[ToolExecutionRecord] = []
@@ -310,17 +342,46 @@ class TrinityOrchestrator:
             if not tool_calls:
                 break
 
-            for tool_call in tool_calls:
-                tool_name = tool_call.function.name
-                tool_args = dict(tool_call.function.arguments)
-                tool_result = await self.tool_registry.call_tool(tool_name, tool_args)
-                tool_records.append(tool_result)
-                stream_blocks.append(_render_tool_block(tool_result))
-                _log_stream(f"instruct-tool:{tool_name}", stream_blocks)
-                messages.append(tool_result.as_ollama_message())
+            tool_records.extend(
+                await self._execute_instruct_tool_calls(
+                    tool_calls=tool_calls,
+                    messages=messages,
+                    stream_blocks=stream_blocks,
+                )
+            )
         else:
             warnings.append("The instruct agent reached the maximum number of tool rounds.")
 
+        return draft_response, traces, tool_records, warnings
+
+    async def _execute_instruct_tool_calls(
+        self,
+        *,
+        tool_calls: list[Any],
+        messages: list[dict[str, Any]],
+        stream_blocks: list[str],
+    ) -> list[ToolExecutionRecord]:
+        tool_records: list[ToolExecutionRecord] = []
+
+        for tool_call in tool_calls:
+            tool_name = tool_call.function.name
+            tool_args = dict(tool_call.function.arguments)
+            tool_result = await self.tool_registry.call_tool(tool_name, tool_args)
+            tool_records.append(tool_result)
+            stream_blocks.append(_render_tool_block(tool_result))
+            _log_stream(f"instruct-tool:{tool_name}", stream_blocks)
+            messages.append(tool_result.as_ollama_message())
+
+        return tool_records
+
+    async def _finalize_instruct_response(
+        self,
+        *,
+        user_prompt: str,
+        reasoning_content: str,
+        draft_response: str,
+        tool_records: list[ToolExecutionRecord],
+    ) -> tuple[ActionPayload, ModelTrace]:
         response, trace = await self.gateway.chat(
             agent_name=f"{self.agents.instruct.name}-finalize",
             model=self.agents.instruct.model,
@@ -342,11 +403,7 @@ class TrinityOrchestrator:
         trace.raw_content = raw_action
         _log_agent_output("instruct-finalize", raw_action)
         action_content = _coerce_stage_content(raw_action) or _coerce_stage_content(draft_response)
-        action = ActionPayload(content=action_content)
-        stream_blocks.append(action.content)
-        _log_stream("instruct", stream_blocks)
-        traces.append(trace)
-        return action, traces, tool_records, warnings
+        return ActionPayload(content=action_content), trace
 
     async def _stage_jp(
         self,
