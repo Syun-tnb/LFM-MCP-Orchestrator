@@ -204,7 +204,7 @@ class TrinityOrchestrator:
         traces: list[ModelTrace] = []
 
         tool_catalog = self.tool_registry.render_catalog()
-        reasoning, trace = await self.gateway.structured_chat(
+        response, trace = await self.gateway.chat(
             agent_name=self.agents.thinking.name,
             model=self.agents.thinking.model,
             messages=[
@@ -220,9 +220,11 @@ class TrinityOrchestrator:
                     ),
                 },
             ],
-            response_model=ThinkingPayload,
             options=self.agents.thinking.options,
         )
+        raw_reasoning = (response.message.content or "").strip()
+        trace.raw_content = raw_reasoning
+        reasoning = ThinkingPayload(content=_extract_reasoning_block(raw_reasoning))
         traces.append(trace)
 
         action, action_traces, tool_records, action_warnings = await self._run_instruct_phase(
@@ -374,6 +376,22 @@ def _snippet(raw_content: str, *, limit: int = 200) -> str:
     if len(compact) <= limit:
         return compact
     return f"{compact[:limit]}..."
+
+
+def _extract_reasoning_block(raw_content: str) -> str:
+    text = raw_content.strip()
+    if not text:
+        raise OrchestratorError("Thinking agent returned empty reasoning output.")
+
+    match = re.search(r"<reasoning>(.*?)</reasoning>", text, flags=re.DOTALL | re.IGNORECASE)
+    if match:
+        content = match.group(1).strip()
+        if content:
+            return content
+
+    # The thinking step is intentionally text-first, so fall back to the raw text
+    # if the local model omits the requested tags.
+    return text
 
 
 async def run_orchestrator(

@@ -48,7 +48,9 @@ Original user request:
 {user_prompt}
 
 Reasoning brief:
-{reasoning.model_dump_json(indent=2)}
+<reasoning>
+{reasoning.content}
+</reasoning>
 
 Action payload:
 {action.model_dump_json(indent=2)}

@@ -3,20 +3,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from . import AgentSpec, RuntimeConstraints
 
 
 class ThinkingPayload(BaseModel):
-    request_summary: str
-    intent: str
-    success_criteria: list[str] = Field(default_factory=list)
-    execution_outline: list[str] = Field(default_factory=list)
-    tool_strategy: list[str] = Field(default_factory=list)
-    assumptions: list[str] = Field(default_factory=list)
-    cautions: list[str] = Field(default_factory=list)
-    response_contract: str
+    content: str
 
 
 THINKING_SYSTEM_PROMPT = """
@@ -27,7 +20,9 @@ Stay pragmatic and grounded:
 - Prefer the smallest plan that can work on a MacBook Air M4 with 24GB memory.
 - Assume models run locally through Ollama and external capabilities arrive through MCP limbs.
 - Surface risks, assumptions, and where tools materially improve correctness.
-- Do not write user-facing prose. Produce only the structured execution brief requested by the schema.
+- Do not write user-facing prose.
+- Return your reasoning as plain text wrapped exactly once in <reasoning>...</reasoning>.
+- Inside the tags, think freely in natural language. Do not output JSON.
 """.strip()
 
 
@@ -36,7 +31,6 @@ def build_thinking_agent(model: str) -> AgentSpec:
         name="thinking",
         model=model,
         system_prompt=THINKING_SYSTEM_PROMPT,
-        response_model=ThinkingPayload,
     )
 
 
@@ -65,5 +59,6 @@ Available MCP limbs:
 Additional context:
 {context_block}
 
-Return a structured execution brief that makes the next agent faster and safer.
+Return a practical reasoning brief that makes the next agent faster and safer.
+Wrap the entire output in <reasoning>...</reasoning>.
 """.strip()

@@ -49,7 +49,9 @@ User request:
 {user_prompt}
 
 Reasoning brief:
-{reasoning.model_dump_json(indent=2)}
+<reasoning>
+{reasoning.content}
+</reasoning>
 
 Available tools:
 {tool_block}
@@ -73,7 +75,9 @@ User request:
 {user_prompt}
 
 Reasoning brief:
-{reasoning.model_dump_json(indent=2)}
+<reasoning>
+{reasoning.content}
+</reasoning>
 
 Draft response from execution phase:
 {draft_response or "(empty)"}
