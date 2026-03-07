@@ -19,8 +19,6 @@ class AgentSpec(BaseModel):
     name: str
     model: str
     system_prompt: str
-    response_model: type[BaseModel] | None = None
-    think_level: bool | str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
 
 

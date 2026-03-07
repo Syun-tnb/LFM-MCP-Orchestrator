@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from . import AgentSpec
-from .instruct import ActionPayload
-from .thinking import ThinkingPayload
 
 
 class LocalizedPayload(BaseModel):
-    locale: str
-    final_response: str
-    summary: str
-    follow_up: list[str] = Field(default_factory=list)
+    content: str
 
 
 JP_SYSTEM_PROMPT = """
@@ -21,7 +16,8 @@ Polish the action output into a clean final response for Syun.
 - Default to natural Japanese when the target locale is Japanese.
 - Preserve technical accuracy, commands, file paths, and identifiers exactly.
 - Keep the response concise and useful.
-- Return only the structured payload requested by the schema.
+- Return only a single <response>...</response> block.
+- Do not output JSON.
 """.strip()
 
 
@@ -30,7 +26,6 @@ def build_jp_agent(model: str) -> AgentSpec:
         name="jp",
         model=model,
         system_prompt=JP_SYSTEM_PROMPT,
-        response_model=LocalizedPayload,
     )
 
 
@@ -38,8 +33,7 @@ def build_jp_input(
     *,
     user_prompt: str,
     locale: str,
-    reasoning: ThinkingPayload,
-    action: ActionPayload,
+    stream_context: str,
 ) -> str:
     return f"""
 Target locale: {locale}
@@ -47,13 +41,8 @@ Target locale: {locale}
 Original user request:
 {user_prompt}
 
-Reasoning brief:
-<reasoning>
-{reasoning.content}
-</reasoning>
+Current stream context:
+{stream_context}
 
-Action payload:
-{action.model_dump_json(indent=2)}
-
-Produce the final localized response.
+Produce the final localized response wrapped in <response>...</response>.
 """.strip()

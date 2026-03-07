@@ -4,14 +4,13 @@ import asyncio
 import json
 import os
 import re
-import sys
 import time
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
-from typing import Any, TypeVar
+from typing import Any
 
 import ollama
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from agents import (
     ActionPayload,
@@ -28,8 +27,6 @@ from agents import (
     build_thinking_input,
 )
 from mcp_runtime import MCPServerConfig, MCPToolRegistry, ToolExecutionRecord
-
-ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 class EngineConfig(BaseModel):
@@ -80,6 +77,7 @@ class OrchestrationResult(BaseModel):
     reasoning: ThinkingPayload
     action: ActionPayload
     localized: LocalizedPayload
+    stream: str
     tools: list[ToolExecutionRecord] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     traces: list[ModelTrace] = Field(default_factory=list)
@@ -88,7 +86,7 @@ class OrchestrationResult(BaseModel):
 
     @property
     def final_response(self) -> str:
-        return self.localized.final_response
+        return self.localized.content
 
 
 class OrchestratorError(RuntimeError):
@@ -99,7 +97,7 @@ class ModelInvocationError(OrchestratorError):
     pass
 
 
-class StructuredOutputError(OrchestratorError):
+class TaggedOutputError(OrchestratorError):
     pass
 
 
@@ -130,30 +128,6 @@ class OllamaGateway:
             raise ModelInvocationError(f"{agent_name} model call failed: {exc}") from exc
 
         return response, self._build_trace(agent_name=agent_name, model=model, response=response, started=started)
-
-    async def structured_chat(
-        self,
-        *,
-        agent_name: str,
-        model: str,
-        messages: list[dict[str, Any]],
-        response_model: type[ModelT],
-        options: dict[str, Any] | None = None,
-    ) -> tuple[ModelT, ModelTrace]:
-        response, trace = await self.chat(
-            agent_name=agent_name,
-            model=model,
-            messages=messages,
-            options=options,
-        )
-        raw_content = (response.message.content or "").strip()
-        payload = _extract_json_payload(raw_content)
-        trace.raw_content = raw_content
-
-        try:
-            return response_model.model_validate_json(payload), trace
-        except ValidationError as exc:
-            raise StructuredOutputError(f"{agent_name} returned invalid structured output: {exc}") from exc
 
     @staticmethod
     def _build_trace(*, agent_name: str, model: str, response: Any, started: float) -> ModelTrace:
@@ -202,6 +176,7 @@ class TrinityOrchestrator:
         started_at = datetime.now(UTC)
         warnings = list(self.tool_registry.startup_warnings)
         traces: list[ModelTrace] = []
+        stream_blocks: list[str] = []
 
         tool_catalog = self.tool_registry.render_catalog()
         response, trace = await self.gateway.chat(
@@ -224,17 +199,20 @@ class TrinityOrchestrator:
         )
         raw_reasoning = (response.message.content or "").strip()
         trace.raw_content = raw_reasoning
-        reasoning = ThinkingPayload(content=_extract_reasoning_block(raw_reasoning))
+        reasoning_text = _extract_tagged_block(raw_reasoning, "reasoning")
+        reasoning = ThinkingPayload(content=reasoning_text)
+        stream_blocks.append(_wrap_tag("reasoning", reasoning_text))
         traces.append(trace)
 
         action, action_traces, tool_records, action_warnings = await self._run_instruct_phase(
             user_prompt=user_prompt,
-            reasoning=reasoning,
+            stream_blocks=stream_blocks,
         )
         traces.extend(action_traces)
         warnings.extend(action_warnings)
+        stream_blocks.append(_wrap_tag("instruct", action.content))
 
-        localized, trace = await self.gateway.structured_chat(
+        response, trace = await self.gateway.chat(
             agent_name=self.agents.jp.name,
             model=self.agents.jp.model,
             messages=[
@@ -244,14 +222,16 @@ class TrinityOrchestrator:
                     "content": build_jp_input(
                         user_prompt=user_prompt,
                         locale=self.config.target_locale,
-                        reasoning=reasoning,
-                        action=action,
+                        stream_context=_join_stream(stream_blocks),
                     ),
                 },
             ],
-            response_model=LocalizedPayload,
             options=self.agents.jp.options,
         )
+        raw_response = (response.message.content or "").strip()
+        trace.raw_content = raw_response
+        localized = LocalizedPayload(content=_extract_tagged_block(raw_response, "response"))
+        stream_blocks.append(_wrap_tag("response", localized.content))
         traces.append(trace)
 
         return OrchestrationResult(
@@ -260,6 +240,7 @@ class TrinityOrchestrator:
             reasoning=reasoning,
             action=action,
             localized=localized,
+            stream=_join_stream(stream_blocks),
             tools=tool_records,
             warnings=warnings,
             traces=traces,
@@ -271,7 +252,7 @@ class TrinityOrchestrator:
         self,
         *,
         user_prompt: str,
-        reasoning: ThinkingPayload,
+        stream_blocks: list[str],
     ) -> tuple[ActionPayload, list[ModelTrace], list[ToolExecutionRecord], list[str]]:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.agents.instruct.system_prompt},
@@ -279,7 +260,7 @@ class TrinityOrchestrator:
                 "role": "user",
                 "content": build_instruct_handoff_input(
                     user_prompt=user_prompt,
-                    reasoning=reasoning,
+                    stream_context=_join_stream(stream_blocks),
                     tool_catalog=self.tool_registry.render_catalog(),
                 ),
             },
@@ -312,11 +293,12 @@ class TrinityOrchestrator:
                 tool_args = dict(tool_call.function.arguments)
                 tool_result = await self.tool_registry.call_tool(tool_name, tool_args)
                 tool_records.append(tool_result)
+                stream_blocks.append(_render_tool_block(tool_result))
                 messages.append(tool_result.as_ollama_message())
         else:
             warnings.append("The instruct agent reached the maximum number of tool rounds.")
 
-        action, trace = await self.gateway.structured_chat(
+        response, trace = await self.gateway.chat(
             agent_name=f"{self.agents.instruct.name}-finalize",
             model=self.agents.instruct.model,
             messages=[
@@ -325,50 +307,41 @@ class TrinityOrchestrator:
                     "role": "user",
                     "content": build_instruct_finalize_input(
                         user_prompt=user_prompt,
-                        reasoning=reasoning,
+                        stream_context=_join_stream(stream_blocks),
                         draft_response=draft_response,
-                        tool_results=[record.model_dump(mode="json") for record in tool_records],
+                        tool_results="\n\n".join(_render_tool_block(record) for record in tool_records),
                     ),
                 },
             ],
-            response_model=ActionPayload,
             options=self.agents.instruct.options,
         )
+        raw_action = (response.message.content or "").strip()
+        trace.raw_content = raw_action
+        action = ActionPayload(content=_extract_tagged_block(raw_action, "instruct"))
         traces.append(trace)
         return action, traces, tool_records, warnings
 
 
-def _extract_json_payload(raw_content: str) -> str:
+def _extract_tagged_block(raw_content: str, tag: str) -> str:
     text = raw_content.strip()
     if not text:
-        raise StructuredOutputError("Model returned an empty response for a structured turn.")
+        raise TaggedOutputError(f"Model returned an empty response for <{tag}>.")
 
-    text = re.sub(r"```(?:json)?", "", text, flags=re.IGNORECASE)
-    text = text.replace("```", "").strip()
+    text = _strip_code_fences(text)
+    pattern = rf"<{re.escape(tag)}>(.*?)</{re.escape(tag)}>"
+    match = re.search(pattern, text, flags=re.DOTALL | re.IGNORECASE)
+    if match:
+        content = match.group(1).strip()
+        if content:
+            return content
 
-    try:
-        json.loads(text)
-        return text
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-        if match:
-            candidate = match.group(0)
-            try:
-                json.loads(candidate)
-                return candidate
-            except json.JSONDecodeError:
-                _print_raw_parse_failure(raw_content)
-                raise StructuredOutputError(
-                    f"Model returned text containing braces, but the extracted JSON was still invalid. Snippet: {_snippet(text)}"
-                ) from None
-
-        _print_raw_parse_failure(raw_content)
-        raise StructuredOutputError(f"Model did not return valid JSON. No '{{' found. Snippet: {_snippet(text)}")
+    raise TaggedOutputError(f"Model did not return a valid <{tag}> block. Snippet: {_snippet(text)}")
 
 
-def _print_raw_parse_failure(raw_content: str) -> None:
-    print("Structured output parse failed. Raw model content:", file=sys.stderr)
-    print(raw_content, file=sys.stderr)
+def _strip_code_fences(raw_content: str) -> str:
+    text = raw_content.strip()
+    text = re.sub(r"```(?:[a-zA-Z0-9_-]+)?", "", text)
+    return text.replace("```", "").strip()
 
 
 def _snippet(raw_content: str, *, limit: int = 200) -> str:
@@ -378,20 +351,22 @@ def _snippet(raw_content: str, *, limit: int = 200) -> str:
     return f"{compact[:limit]}..."
 
 
-def _extract_reasoning_block(raw_content: str) -> str:
-    text = raw_content.strip()
-    if not text:
-        raise OrchestratorError("Thinking agent returned empty reasoning output.")
+def _wrap_tag(tag: str, content: str) -> str:
+    return f"<{tag}>\n{content.strip()}\n</{tag}>"
 
-    match = re.search(r"<reasoning>(.*?)</reasoning>", text, flags=re.DOTALL | re.IGNORECASE)
-    if match:
-        content = match.group(1).strip()
-        if content:
-            return content
 
-    # The thinking step is intentionally text-first, so fall back to the raw text
-    # if the local model omits the requested tags.
-    return text
+def _join_stream(blocks: list[str]) -> str:
+    return "\n\n".join(block for block in blocks if block).strip()
+
+
+def _render_tool_block(record: ToolExecutionRecord) -> str:
+    payload = record.content.strip() or "(empty)"
+    status = "error" if record.is_error else "ok"
+    return (
+        f'<tool name="{record.alias}" server="{record.server}" status="{status}">\n'
+        f"{payload}\n"
+        f"</tool>"
+    )
 
 
 async def run_orchestrator(
