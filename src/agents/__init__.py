@@ -30,13 +30,28 @@ class TrinityAgents(BaseModel):
     jp: AgentSpec
 
 
-from .instruct import ActionPayload, build_instruct_agent, build_instruct_finalize_input, build_instruct_handoff_input
-from .jp import LocalizedPayload, build_jp_agent, build_jp_input
+from .instruct import (
+    ActionPayload,
+    INSTRUCT_ROUTER_SYSTEM_PROMPT,
+    build_instruct_agent,
+    build_instruct_finalize_input,
+    build_instruct_handoff_input,
+    build_instruct_router_input,
+)
+from .jp import (
+    JP_NORMALIZER_SYSTEM_PROMPT,
+    LocalizedPayload,
+    build_jp_agent,
+    build_jp_input,
+    build_jp_normalization_input,
+)
 from .thinking import ThinkingPayload, build_thinking_agent, build_thinking_input
 
 __all__ = [
     "ActionPayload",
     "AgentSpec",
+    "INSTRUCT_ROUTER_SYSTEM_PROMPT",
+    "JP_NORMALIZER_SYSTEM_PROMPT",
     "LocalizedPayload",
     "RuntimeConstraints",
     "ThinkingPayload",
@@ -44,8 +59,10 @@ __all__ = [
     "build_instruct_agent",
     "build_instruct_finalize_input",
     "build_instruct_handoff_input",
+    "build_instruct_router_input",
     "build_jp_agent",
     "build_jp_input",
+    "build_jp_normalization_input",
     "build_thinking_agent",
     "build_thinking_input",
 ]

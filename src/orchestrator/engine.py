@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 
 from agents import (
     ActionPayload,
+    INSTRUCT_ROUTER_SYSTEM_PROMPT,
+    JP_NORMALIZER_SYSTEM_PROMPT,
     LocalizedPayload,
     RuntimeConstraints,
     ThinkingPayload,
@@ -22,8 +24,10 @@ from agents import (
     build_instruct_agent,
     build_instruct_finalize_input,
     build_instruct_handoff_input,
+    build_instruct_router_input,
     build_jp_agent,
     build_jp_input,
+    build_jp_normalization_input,
     build_thinking_agent,
     build_thinking_input,
 )
@@ -90,6 +94,14 @@ class OrchestrationResult(BaseModel):
     @property
     def final_response(self) -> str:
         return self.localized.content
+
+
+class ThinkingRouteDecision(BaseModel):
+    thinking_request: str
+    include_runtime_context: bool = False
+    normalize_for_thinking: bool = False
+    normalize_to_english: bool = False
+    route_reason: str | None = None
 
 
 class OrchestratorError(RuntimeError):
@@ -200,9 +212,24 @@ class TrinityOrchestrator:
         traces: list[ModelTrace] = []
         stream_blocks: list[str] = []
 
-        reasoning, trace = await self._stage_thinking(
+        route, trace = await self._stage_route_input(
             user_prompt=user_prompt,
             context=context,
+        )
+        traces.append(trace)
+
+        thinking_request = route.thinking_request or user_prompt
+        if route.normalize_for_thinking and route.normalize_to_english:
+            thinking_request, trace = await self._stage_normalize_for_thinking(
+                user_prompt=thinking_request,
+                route=route,
+            )
+            traces.append(trace)
+
+        reasoning, trace = await self._stage_thinking(
+            user_prompt=thinking_request,
+            context=context,
+            route=route,
             stream_blocks=stream_blocks,
         )
         traces.append(trace)
@@ -236,11 +263,66 @@ class TrinityOrchestrator:
             completed_at=datetime.now(UTC),
         )
 
+    async def _stage_route_input(
+        self,
+        *,
+        user_prompt: str,
+        context: dict[str, Any] | None,
+    ) -> tuple[ThinkingRouteDecision, ModelTrace]:
+        response, trace = await self.gateway.chat(
+            agent_name="instruct-router",
+            model=self.agents.instruct.model,
+            messages=[
+                {"role": "system", "content": INSTRUCT_ROUTER_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": build_instruct_router_input(
+                        user_prompt=user_prompt,
+                        locale=self.config.target_locale,
+                        context=context,
+                    ),
+                },
+            ],
+            options=self.agents.instruct.options,
+        )
+        raw_route = (response.message.content or "").strip()
+        trace.raw_content = raw_route
+        _log_agent_output("instruct-router", raw_route)
+        return _parse_route_decision(raw_route, fallback_request=user_prompt), trace
+
+    async def _stage_normalize_for_thinking(
+        self,
+        *,
+        user_prompt: str,
+        route: ThinkingRouteDecision,
+    ) -> tuple[str, ModelTrace]:
+        response, trace = await self.gateway.chat(
+            agent_name="jp-normalize",
+            model=self.agents.jp.model,
+            messages=[
+                {"role": "system", "content": JP_NORMALIZER_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": build_jp_normalization_input(
+                        user_prompt=user_prompt,
+                        route_reason=route.route_reason,
+                    ),
+                },
+            ],
+            options=self.agents.jp.options,
+        )
+        raw_prompt = (response.message.content or "").strip()
+        trace.raw_content = raw_prompt
+        _log_agent_output("jp-normalize", raw_prompt)
+        normalized_prompt = _sanitize_content(raw_prompt) or user_prompt
+        return normalized_prompt, trace
+
     async def _stage_thinking(
         self,
         *,
         user_prompt: str,
         context: dict[str, Any] | None,
+        route: ThinkingRouteDecision,
         stream_blocks: list[str],
     ) -> tuple[ThinkingPayload, ModelTrace]:
         tool_catalog = self.tool_registry.render_catalog()
@@ -252,6 +334,8 @@ class TrinityOrchestrator:
                 constraints=self.config.constraints,
                 tool_catalog=tool_catalog,
                 context=context,
+                route_reason=route.route_reason,
+                include_runtime_context=route.include_runtime_context,
             ),
         )
         response, trace = await self.gateway.generate(
@@ -442,6 +526,39 @@ class TrinityOrchestrator:
 def _coerce_stage_content(raw_content: str) -> str:
     text = _sanitize_content(raw_content)
     return text or EMPTY_MODEL_RESPONSE
+
+
+def _parse_route_decision(raw_content: str, *, fallback_request: str) -> ThinkingRouteDecision:
+    payload = _extract_json_object(raw_content)
+    if payload is None:
+        return ThinkingRouteDecision(thinking_request=fallback_request)
+
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return ThinkingRouteDecision(thinking_request=fallback_request)
+
+    try:
+        decision = ThinkingRouteDecision.model_validate(data)
+    except Exception:
+        return ThinkingRouteDecision(thinking_request=fallback_request)
+
+    thinking_request = decision.thinking_request.strip() or fallback_request
+    return ThinkingRouteDecision(
+        thinking_request=thinking_request,
+        include_runtime_context=decision.include_runtime_context,
+        normalize_for_thinking=decision.normalize_for_thinking or decision.normalize_to_english,
+        normalize_to_english=decision.normalize_to_english,
+        route_reason=_sanitize_content(decision.route_reason or "") or None,
+    )
+
+
+def _extract_json_object(raw_content: str) -> str | None:
+    text = _strip_code_fences(raw_content)
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return None
+    return match.group(0)
 
 
 def _build_thinking_prompt(*, system_prompt: str, user_input: str) -> str:

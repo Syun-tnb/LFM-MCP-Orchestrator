@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from pydantic import BaseModel
 
 from . import AgentSpec
@@ -23,12 +26,59 @@ Turn the reasoning brief into action.
 """.strip()
 
 
+INSTRUCT_ROUTER_SYSTEM_PROMPT = """
+You are lfm-instruct-router, the traffic controller before reasoning.
+
+Inspect the user request and decide how the thinking stage should receive it.
+- Keep simple requests simple.
+- Request runtime or MCP context only when the user is actually asking about local models, orchestration, tooling, or execution environment.
+- Request English normalization only when it materially improves the thinking model's input.
+- Do not answer the user request.
+- Do not call tools.
+- Return JSON only.
+""".strip()
+
+
 def build_instruct_agent(model: str) -> AgentSpec:
     return AgentSpec(
         name="instruct",
         model=model,
         system_prompt=INSTRUCT_SYSTEM_PROMPT,
     )
+
+
+def build_instruct_router_input(
+    *,
+    user_prompt: str,
+    locale: str,
+    context: dict[str, Any] | None = None,
+) -> str:
+    context_block = json.dumps(context, ensure_ascii=True, indent=2, sort_keys=True) if context else "null"
+    return f"""
+User request:
+{user_prompt}
+
+Target locale: {locale}
+
+Additional context:
+{context_block}
+
+Return a JSON object with this shape:
+{{
+  "thinking_request": "string",
+  "include_runtime_context": false,
+  "normalize_for_thinking": false,
+  "normalize_to_english": false,
+  "route_reason": "short string"
+}}
+
+Rules:
+- Keep "thinking_request" close to the original request unless cleanup is clearly useful.
+- Set "include_runtime_context" to true only for runtime/orchestration/tooling/local-LLM requests.
+- Set "normalize_for_thinking" to true only when the thinking input should be rewritten before reasoning.
+- Set "normalize_to_english" to true only when that rewrite should be in English.
+- Keep "route_reason" short and concrete.
+""".strip()
 
 
 def build_instruct_handoff_input(

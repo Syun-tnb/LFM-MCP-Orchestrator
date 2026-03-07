@@ -40,91 +40,49 @@ def build_thinking_input(
     constraints: RuntimeConstraints,
     tool_catalog: list[str],
     context: dict[str, Any] | None = None,
+    route_reason: str | None = None,
+    include_runtime_context: bool = False,
 ) -> str:
-    sections = [f"User request:\n{user_prompt.strip()}"]
+    sections = [f"Reasoning request:\n{user_prompt.strip()}"]
 
-    if _should_include_locale_context(user_prompt, locale):
-        sections.append(f"Target locale: {locale}")
+    if route_reason and include_runtime_context:
+        sections.append(f"Router note:\n{route_reason.strip()}")
 
-    optional_context = _build_optional_thinking_context(
-        user_prompt=user_prompt,
-        constraints=constraints,
-        tool_catalog=tool_catalog,
-        context=context,
-    )
-    if optional_context:
-        sections.append(optional_context)
+    if context:
+        sections.append(f"Additional context:\n{_render_context_block(context)}")
+
+    if include_runtime_context:
+        sections.append(
+            _build_runtime_context_block(
+                locale=locale,
+                constraints=constraints,
+                tool_catalog=tool_catalog,
+            )
+        )
 
     sections.append("Write a short reasoning brief for the next stage.")
     return "\n\n".join(section for section in sections if section).strip()
 
 
-def _build_optional_thinking_context(
+def _build_runtime_context_block(
     *,
-    user_prompt: str,
+    locale: str,
     constraints: RuntimeConstraints,
     tool_catalog: list[str],
-    context: dict[str, Any] | None,
 ) -> str:
-    sections: list[str] = []
+    sections = []
 
-    if context:
-        sections.append(
-            "Additional context:\n"
-            f"{json.dumps(context, ensure_ascii=True, indent=2, sort_keys=True)}"
-        )
+    if locale:
+        sections.append(f"Target locale: {locale}")
 
-    if _should_include_runtime_context(user_prompt):
-        sections.append(f"Runtime constraints:\n{constraints.model_dump_json(indent=2)}")
-        if tool_catalog:
-            tool_block = "\n".join(f"- {tool}" for tool in tool_catalog)
-            sections.append(f"Available MCP tools:\n{tool_block}")
+    sections.append(f"Runtime context:\n{constraints.model_dump_json(indent=2)}")
 
-    return "\n\n".join(sections).strip()
+    if tool_catalog:
+        tool_block = "\n".join(f"- {tool}" for tool in tool_catalog)
+        sections.append(f"Available MCP tools:\n{tool_block}")
+
+    return "\n\n".join(sections)
 
 
-def _should_include_runtime_context(user_prompt: str) -> bool:
-    prompt = user_prompt.casefold()
-    keywords = (
-        "agent",
-        "cli",
-        "local model",
-        "local llm",
-        "mcp",
-        "model",
-        "ollama",
-        "orchestr",
-        "prompt",
-        "python",
-        "runtime",
-        "tool",
-        "uv",
-        "workflow",
-        "モデル",
-        "エージェント",
-        "オーケスト",
-        "ツール",
-        "ランタイム",
-        "ローカル",
-    )
-    return any(keyword in prompt for keyword in keywords)
-
-
-def _should_include_locale_context(user_prompt: str, locale: str) -> bool:
-    if not locale:
-        return False
-
-    prompt = user_prompt.casefold()
-    locale_keywords = (
-        "english",
-        "japanese",
-        "language",
-        "locale",
-        "translate",
-        "translation",
-        "日本語",
-        "英語",
-        "翻訳",
-        "言語",
-    )
-    return any(keyword in prompt for keyword in locale_keywords)
+def _render_context_block(context: dict[str, Any]) -> str:
+    return json.dumps(context, ensure_ascii=True, indent=2, sort_keys=True)
