@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
+from unittest.mock import patch
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_ROOT = PROJECT_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-
-from orchestrator.engine import EMPTY_MODEL_RESPONSE, _coerce_stage_content, _join_stream, _sanitize_content
+from mcp_runtime import MCPServerConfig
+from orchestrator.engine import (
+    EMPTY_MODEL_RESPONSE,
+    EngineConfig,
+    _build_passthrough_task_memo,
+    _coerce_stage_content,
+    _extract_result_content,
+    _join_stream,
+    _sanitize_content,
+    _should_include_runtime_context,
+    detect_prompt_language,
+)
 
 
 class CoerceStageContentTests(unittest.TestCase):
@@ -82,6 +86,88 @@ class JoinStreamTests(unittest.TestCase):
         blocks = ["reasoning brief", "execution output", "final response"]
 
         self.assertEqual(_join_stream(blocks), "reasoning brief\n---\nexecution output\n---\nfinal response")
+
+
+class DetectPromptLanguageTests(unittest.TestCase):
+    def test_detects_japanese_text(self) -> None:
+        self.assertEqual(detect_prompt_language("日本語で説明して"), "ja")
+
+    def test_defaults_to_english_when_no_japanese_characters_are_present(self) -> None:
+        self.assertEqual(detect_prompt_language("Explain the current pipeline."), "en")
+
+
+class PassthroughTaskMemoTests(unittest.TestCase):
+    def test_builds_compact_task_memo_for_non_japanese_prompts(self) -> None:
+        memo = _build_passthrough_task_memo("  Explain   the\n pipeline.  ")
+
+        self.assertEqual(
+            memo,
+            "TASK:\nExplain the pipeline.\n\nGOAL:\nAnswer the request.\n\nCONSTRAINTS:\nNone",
+        )
+
+
+class RuntimeContextKeywordTests(unittest.TestCase):
+    def test_matches_english_runtime_keywords(self) -> None:
+        self.assertTrue(_should_include_runtime_context("Describe the MCP workflow."))
+
+    def test_matches_japanese_runtime_keywords(self) -> None:
+        self.assertTrue(_should_include_runtime_context("ローカルLLMの構成を説明して"))
+
+    def test_ignores_unrelated_prompts(self) -> None:
+        self.assertFalse(_should_include_runtime_context("Summarize this poem."))
+
+
+class ExtractResultContentTests(unittest.TestCase):
+    def test_prefers_explicit_result_block(self) -> None:
+        raw = """
+        SCRATCH:
+        analyze
+
+        RESULT:
+        concise answer
+
+        NOTES:
+        trailing text
+        """
+
+        self.assertEqual(_extract_result_content(raw), "concise answer")
+
+    def test_falls_back_to_last_non_empty_block(self) -> None:
+        raw = """
+        interim thought
+
+        final usable answer
+        """
+
+        self.assertEqual(_extract_result_content(raw), "final usable answer")
+
+    def test_returns_default_string_when_no_content_remains(self) -> None:
+        self.assertEqual(_extract_result_content("   "), EMPTY_MODEL_RESPONSE)
+
+
+class EngineConfigFromEnvTests(unittest.TestCase):
+    @patch.dict(
+        "os.environ",
+        {
+            "MCP_SERVERS_JSON": '[{"name":"filesystem","command":"npx","args":["server"],"tool_prefix":"fs"}]',
+            "LFM_TARGET_LOCALE": "ja-JP",
+        },
+        clear=False,
+    )
+    def test_parses_mcp_servers_json(self) -> None:
+        config = EngineConfig.from_env()
+
+        self.assertEqual(len(config.mcp_servers), 1)
+        self.assertEqual(config.mcp_servers[0].name, "filesystem")
+        self.assertEqual(config.mcp_servers[0].tool_prefix, "fs")
+
+    @patch.dict("os.environ", {"MCP_SERVERS_JSON": "[]"}, clear=False)
+    def test_prefers_explicit_mcp_servers_argument(self) -> None:
+        explicit_servers = [MCPServerConfig(name="explicit", command="python")]
+
+        config = EngineConfig.from_env(mcp_servers=explicit_servers)
+
+        self.assertEqual(config.mcp_servers, explicit_servers)
 
 
 if __name__ == "__main__":

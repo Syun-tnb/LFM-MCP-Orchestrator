@@ -1,42 +1,48 @@
-# LFM-MCP-Orchestrator 🧠🌸🛠️
+# LFM-MCP-Orchestrator 日本語概要
 
-M4 Air (24GB) 上で LFM 2.5 の 3 モデル（Instruct / Thinking / JP）を並列稼働させ、MCP (Model Context Protocol) を介して外部ツールと連携するための自前オーケストレーター。
+このリポジトリは、Ollama 上の 3 つの役割を持つモデルを順番に実行するローカル向けオーケストレーターです。
 
-## 🚀 Concept: 三位一体 (The Trinity)
-本プロジェクトでは、特性の異なる 3 つの LFM (Liquid Foundation Models) を連携させ、一つの強力な思考体として運用します。
+- `instruct`: 正規化
+- `thinking`: 推論
+- `jp`: 最終日本語化
 
-1. **lfm-thinking**: 論理構築・ステップバイステップの思考を担当。
-2. **lfm-instruct**: 思考に基づいた具体的なタスク実行・コマンド生成を担当。
-3. **lfm-jp**: シュンさんへの最終的なアウトプットと日本語最適化を担当。
+重要:
 
-## 🛠️ Tech Stack
-- **Hardware**: MacBook Air M4 (24GB Unified Memory)
-- **Runtime**: Python 3.14+ (via [uv](https://github.com/astral-sh/uv))
-- **LLM Engine**: Ollama (LFM 2.5 1.2B Q8_0)
-- **Protocol**: MCP (Model Context Protocol)
+- 現在の実装は逐次実行です。旧説明にあるような並列実行ではありません。
+- MCP サーバー接続基盤はありますが、現行パイプラインではツール呼び出しはまだ実行されません。
 
-## 📁 Directory Structure
-```text
-src/
-├── main.py              # エントリーポイント
-├── orchestrator/        # 三姉妹の会議（推論リレー）制御
-├── agents/              # 各モデルの役割・プロンプト定義
-└── mcp/                 # MCPサーバーとの接続管理
+## 主要ドキュメント
 
-```
+- ルート概要とクイックスタート: [`README.md`](/Users/tanabeshunji/Documents/lfm-mcp-orchestrator/README.md)
+- アーキテクチャと baton flow: [`architecture.md`](/Users/tanabeshunji/Documents/lfm-mcp-orchestrator/docs/architecture.md)
+- MCP の現状: [`mcp.md`](/Users/tanabeshunji/Documents/lfm-mcp-orchestrator/docs/mcp.md)
+- 開発手順とテスト: [`development.md`](/Users/tanabeshunji/Documents/lfm-mcp-orchestrator/docs/development.md)
 
-## ⚡️ Quick Start
+## 現在の実行フロー
+
+コードから確認できる現在の流れ:
+
+1. CLI が `.env` を読み込み、プロンプトと設定を解決する
+2. Ollama への接続を確認する
+3. 入力に日本語文字があれば `instruct` で英語の task memo に正規化する
+4. `thinking` が英語で推論する
+5. `jp` が `RESULT:` を使って自然な日本語の最終回答を返す
+
+## ローカル実行
 
 ```bash
-# 環境構築 (uv使用)
 uv sync
-
-# 実行
-uv run src/main.py
-
+uv run python src/main.py "このプロジェクトの流れを説明して"
 ```
 
----
+前提:
 
-© 2026 **Ashes Division(Syun) — Reyz Laboratory(Koharu)**
+- Python `>=3.14`
+- `uv`
+- `ollama`
+- `lfm-thinking`, `lfm-instruct`, `lfm-jp` という名前で解決できるローカルモデル
 
+不明点 / TODO:
+
+- モデルの作成手順や Modelfile は現状リポジトリに含まれていません
+- `.env.example` もまだありません

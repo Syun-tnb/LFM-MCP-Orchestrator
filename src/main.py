@@ -45,8 +45,7 @@ def load_mcp_servers(path: Path | None) -> list[MCPServerConfig] | None:
 
 
 def _normalize_host(raw_host: str) -> str:
-    parsed = urlparse(raw_host)
-    if parsed.scheme:
+    if "://" in raw_host:
         return raw_host.rstrip("/")
     return f"http://{raw_host.rstrip('/')}"
 
